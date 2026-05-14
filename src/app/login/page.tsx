@@ -8,6 +8,12 @@ export default function LoginPage() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  
+  // Forgot Password State
+  const [showForgotPassword, setShowForgotPassword] = useState(false)
+  const [resetEmail, setResetEmail] = useState('')
+  const [resetMessage, setResetMessage] = useState({ type: '', text: '' })
+  const [resetLoading, setResetLoading] = useState(false)
 
   const isNetworkAuthError = (message: string) =>
     message.includes('fetch failed') ||
@@ -82,6 +88,31 @@ export default function LoginPage() {
     }
   }
 
+  const handleResetPassword = async () => {
+    setResetMessage({ type: '', text: '' })
+    if (!resetEmail) {
+      setResetMessage({ type: 'error', text: 'Please enter your email address' })
+      return
+    }
+    
+    setResetLoading(true)
+    try {
+      const supabase = createClient()
+      const { error } = await supabase.auth.resetPasswordForEmail(resetEmail)
+      
+      if (error) {
+        setResetMessage({ type: 'error', text: error.message })
+      } else {
+        setResetMessage({ type: 'success', text: 'Password reset link sent to your email' })
+        setResetEmail('')
+      }
+    } catch (err) {
+      setResetMessage({ type: 'error', text: 'An unexpected error occurred' })
+    } finally {
+      setResetLoading(false)
+    }
+  }
+
   return (
     <div className="min-h-screen bg-green-50 flex items-center justify-center p-4">
       <div className="w-full max-w-md">
@@ -126,6 +157,46 @@ export default function LoginPage() {
           >
             {loading ? 'Signing in...' : 'Sign In'}
           </button>
+
+          <div className="mt-4 text-center">
+            <button
+              onClick={() => setShowForgotPassword(!showForgotPassword)}
+              className="text-sm text-green-700 hover:text-green-800 hover:underline font-medium"
+            >
+              Forgot Password?
+            </button>
+          </div>
+
+          {showForgotPassword && (
+            <div className="mt-6 pt-6 border-t border-gray-100 animate-in fade-in slide-in-from-top-4 duration-300">
+              <h3 className="text-sm font-bold text-gray-800 mb-2">Reset Password</h3>
+              <p className="text-xs text-gray-500 mb-3">Enter your email and we'll send you a link to reset your password.</p>
+              
+              <div className="mb-3">
+                <input
+                  type="email"
+                  value={resetEmail}
+                  onChange={(e) => setResetEmail(e.target.value)}
+                  className="w-full border border-gray-300 rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-green-500 text-sm"
+                  placeholder="Enter your email"
+                />
+              </div>
+              
+              {resetMessage.text && (
+                <div className={`mb-3 p-3 rounded-lg text-sm ${resetMessage.type === 'error' ? 'bg-red-50 text-red-600 border border-red-200' : 'bg-green-50 text-green-700 border border-green-200'}`}>
+                  {resetMessage.text}
+                </div>
+              )}
+              
+              <button
+                onClick={handleResetPassword}
+                disabled={resetLoading}
+                className="w-full bg-gray-800 text-white py-2 rounded-lg text-sm font-semibold hover:bg-gray-900 disabled:opacity-50 transition-colors"
+              >
+                {resetLoading ? 'Sending...' : 'Send Reset Link'}
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>

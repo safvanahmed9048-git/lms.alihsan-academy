@@ -43,7 +43,7 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json()
-    const { email, password, role, name, className, teacherId } = body
+    const { email, password, role, name, className, teacherId, registrationNumber } = body
 
     // 1. Create the user in Auth (or reuse existing account by email)
     const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
@@ -95,15 +95,17 @@ export async function POST(request: Request) {
     if (role === 'student') {
       const { error: detailedProfileError } = await supabaseAdmin
         .from('student_profiles')
-        .insert({
+        .upsert({
           user_id: userId,
           name: name || email,
           class_name: className || null,
           teacher_id: teacherId || null,
+          registration_number: registrationNumber || null,
+          academy_joined_date: new Date().toISOString(),
           joined_date: new Date().toISOString()
-        })
+        }, { onConflict: 'user_id' })
 
-      if (detailedProfileError && detailedProfileError.code !== '23505') { // Ignore duplicate keys
+      if (detailedProfileError) {
         throw detailedProfileError
       }
     }
@@ -111,9 +113,13 @@ export async function POST(request: Request) {
     if (role === 'teacher') {
       const { error: teacherProfileError } = await supabaseAdmin
         .from('teacher_profiles')
-        .insert({ user_id: userId })
+        .upsert({ 
+          user_id: userId,
+          name: name || email,
+          date_of_joining: new Date().toISOString()
+        }, { onConflict: 'user_id' })
 
-      if (teacherProfileError && teacherProfileError.code !== '23505') {
+      if (teacherProfileError) {
         throw teacherProfileError
       }
     }
@@ -205,13 +211,15 @@ export async function PATCH(request: Request) {
     }
 
     if (previousTeacherId && teacherId && previousTeacherId !== teacherId) {
-      const { error: reassignClassesError } = await supabaseAdmin
+      const { error: deleteClassesError } = await supabaseAdmin
         .from('classes')
-        .update({ teacher_id: teacherId })
+        .delete()
         .eq('student_id', userId)
         .eq('teacher_id', previousTeacherId)
+        .eq('status', 'scheduled')
+        .gt('scheduled_at', new Date().toISOString())
 
-      if (reassignClassesError) throw reassignClassesError
+      if (deleteClassesError) throw deleteClassesError
     }
 
     return NextResponse.json({ success: true })

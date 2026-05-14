@@ -1,12 +1,17 @@
 "use client"
 
 import { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { LogoutButton } from '@/components/logout-button'
 import { Home, BarChart3, User, Loader2, Calendar, Clock, Video } from 'lucide-react'
 import { format, isToday, isFuture, parseISO } from 'date-fns'
+import { Avatar } from '@/components/avatar'
+
+import StudentProfilePage from '@/app/student/profile/page'
 
 export default function StudentDashboard() {
+  const router = useRouter()
   const [activeTab, setActiveTab] = useState<'home' | 'attendance' | 'profile'>('home')
   const [isLoading, setIsLoading] = useState(true)
   const supabase = createClient()
@@ -15,19 +20,21 @@ export default function StudentDashboard() {
   const [todayClass, setTodayClass] = useState<any>(null)
   const [upcomingClasses, setUpcomingClasses] = useState<any[]>([])
   const [attendanceData, setAttendanceData] = useState<{
-    totalScheduled: number
-    totalAttended: number
+    totalClasses: number
+    presentCount: number
+    absentCount: number
     percentage: number
     history: any[]
-  }>({ totalScheduled: 0, totalAttended: 0, percentage: 0, history: [] })
+  }>({ totalClasses: 0, presentCount: 0, absentCount: 0, percentage: 0, history: [] })
   const [profileData, setProfileData] = useState<any>(null)
+  const [teachers, setTeachers] = useState<any[]>([])
   
   useEffect(() => {
     async function fetchData() {
       setIsLoading(true)
       try {
         const { data: { user } } = await supabase.auth.getUser()
-        if (!user) return
+        if (!user) { router.push('/login'); return }
 
         // Fetch profile
         const { data: profile } = await supabase
@@ -50,20 +57,41 @@ export default function StudentDashboard() {
           date_joined: profile?.created_at || user.created_at
         })
 
-        // Fetch classes via server API (service-role backend query with user auth)
-        const classesRes = await fetch('/api/classes/student')
-        const classesPayload = await classesRes.json()
-        if (!classesRes.ok) throw new Error(classesPayload.error || 'Failed to fetch classes')
+        // Fetch classes via direct Supabase call
+        const { data: classesData, error: classesError } = await supabase
+          .from('classes')
+          .select('*')
+          .eq('student_id', user.id)
+          .order('scheduled_at', { ascending: true })
 
-        const allClasses = classesPayload.allClasses || []
-        const scheduledClasses = classesPayload.scheduledClasses || []
+        console.log('Student ID:', user.id)
+        console.log('Classes:', classesData)
+        console.log('Error:', classesError)
 
-        const today = scheduledClasses.filter((c: any) => {
+        const allClasses = classesData || []
+
+        const today = allClasses.filter((c: any) => {
           const classDate = new Date(c.scheduled_at).toDateString()
           const todayDate = new Date().toDateString()
           return classDate === todayDate
         })
-        const upcoming = scheduledClasses.filter((c: any) => new Date(c.scheduled_at) > new Date())
+        
+        const upcoming = allClasses.filter((c: any) => {
+          const classDate = new Date(c.scheduled_at)
+          const todayDate = new Date()
+          todayDate.setHours(23, 59, 59, 999)
+          return classDate > todayDate && c.status === 'scheduled'
+        })
+        
+        // Fetch teachers
+        const teacherIds = Array.from(new Set(allClasses.map((c: any) => c.teacher_id))).filter(Boolean)
+        const { data: teacherProfiles } = await supabase
+          .from('teacher_profiles')
+          .select('user_id, name, profile_photo')
+          .in('user_id', teacherIds)
+        
+        setTeachers(teacherProfiles || [])
+
         setTodayClass(today[0] || null)
         setUpcomingClasses(upcoming)
 
@@ -73,21 +101,24 @@ export default function StudentDashboard() {
           .select('*')
           .eq('student_id', user.id)
           
-        const totalScheduled = allClasses?.length || 0
-        const attendedIds = new Set(attendance?.map(a => a.class_id) || [])
-        const totalAttended = attendedIds.size
-        const percentage = totalScheduled === 0 ? 0 : Math.round((totalAttended / totalScheduled) * 100)
+        const completedClasses = allClasses.filter(c => c.status === 'completed')
+        const totalClasses = completedClasses.length
+        const presentCount = attendance?.filter(a => a.status === 'present' || !a.status).length || 0 // Default to present if status missing
+        const absentCount = attendance?.filter(a => a.status === 'absent').length || 0
+        const percentage = totalClasses === 0 ? 0 : Math.round((presentCount / totalClasses) * 100)
 
-        // Generate history: map all classes (past) to attendance status
-        const now = new Date()
-        const pastClasses = allClasses?.filter(c => c.scheduled_at && new Date(c.scheduled_at) < now) || []
-        const history = pastClasses.map(c => ({
-          date: c.scheduled_at,
-          status: attendedIds.has(c.id) ? 'Attended' : 'Missed',
-          className: c.title || 'Class'
-        })).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+        const history = completedClasses.map(c => {
+          const att = attendance?.find(a => a.class_id === c.id)
+          const status = att && att.status === 'absent' ? 'Absent' : 'Present'
+          return {
+            date: c.scheduled_at,
+            status: status,
+            className: c.title || 'Class',
+            teacher_id: c.teacher_id
+          }
+        }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
 
-        setAttendanceData({ totalScheduled, totalAttended, percentage, history })
+        setAttendanceData({ totalClasses, presentCount, absentCount, percentage, history })
 
       } catch (err) {
         console.error("Error fetching data:", err)
@@ -144,9 +175,9 @@ export default function StudentDashboard() {
       </div>
 
       <main className="flex-1 w-full max-w-4xl mx-auto p-4 md:p-8">
-        {activeTab === 'home' && <HomeTab todayClass={todayClass} upcomingClasses={upcomingClasses} />}
-        {activeTab === 'attendance' && <AttendanceTab data={attendanceData} />}
-        {activeTab === 'profile' && <ProfileTab profile={profileData} />}
+        {activeTab === 'home' && <HomeTab todayClass={todayClass} upcomingClasses={upcomingClasses} teachers={teachers} />}
+        {activeTab === 'attendance' && <AttendanceTab data={attendanceData} teachers={teachers} />}
+        {activeTab === 'profile' && <StudentProfilePage />}
       </main>
 
       {/* Bottom Navigation for Mobile */}
@@ -183,7 +214,7 @@ export default function StudentDashboard() {
   )
 }
 
-function HomeTab({ todayClass, upcomingClasses }: { todayClass: any, upcomingClasses: any[] }) {
+function HomeTab({ todayClass, upcomingClasses, teachers }: { todayClass: any, upcomingClasses: any[], teachers: any[] }) {
   return (
     <div className="space-y-8 animate-in fade-in duration-300">
       <section>
@@ -193,13 +224,24 @@ function HomeTab({ todayClass, upcomingClasses }: { todayClass: any, upcomingCla
         </h3>
         {todayClass ? (
           <div className="bg-white rounded-2xl p-6 shadow-sm border border-green-100 flex flex-col md:flex-row md:items-center justify-between gap-6">
-            <div className="space-y-2">
-              <span className="inline-block px-3 py-1 bg-green-100 text-green-800 text-xs font-bold rounded-full uppercase tracking-wider mb-2">Live Today</span>
-              <h4 className="font-bold text-2xl text-gray-900">{todayClass.title || 'Live Session'}</h4>
-              <p className="text-gray-600 flex items-center gap-2 font-medium">
-                <Clock className="h-5 w-5 text-gray-400" />
-                {format(parseISO(todayClass.scheduled_at), "EEEE, d MMMM yyyy 'at' h:mm a")}
-              </p>
+            <div className="flex items-center gap-4">
+              {(() => {
+                const teacher = teachers.find(t => t.user_id === todayClass.teacher_id);
+                return (
+                  <>
+                    <Avatar photoUrl={teacher?.profile_photo} name={teacher?.name} size="lg" />
+                    <div className="space-y-1">
+                      <span className="inline-block px-3 py-1 bg-green-100 text-green-800 text-xs font-bold rounded-full uppercase tracking-wider mb-1">Live Today</span>
+                      <h4 className="font-bold text-2xl text-gray-900">{todayClass.title || 'Live Session'}</h4>
+                      <p className="text-sm font-bold text-green-700 mb-1">Teacher: {teacher?.name || 'Assigned Teacher'}</p>
+                      <p className="text-gray-600 flex items-center gap-2 font-medium">
+                        <Clock className="h-5 w-5 text-gray-400" />
+                        {format(parseISO(todayClass.scheduled_at), "EEEE, d MMMM yyyy 'at' h:mm a")}
+                      </p>
+                    </div>
+                  </>
+                )
+              })()}
             </div>
             {todayClass.meet_link ? (
               <a 
@@ -232,19 +274,21 @@ function HomeTab({ todayClass, upcomingClasses }: { todayClass: any, upcomingCla
         <h3 className="text-xl font-bold text-green-900 mb-4">Upcoming Classes</h3>
         {upcomingClasses.length > 0 ? (
           <div className="grid gap-3">
-            {upcomingClasses.map((c, i) => (
-              <div key={i} className="bg-white rounded-xl p-5 shadow-sm border border-gray-100 flex items-center justify-between hover:border-green-200 transition-colors">
-                <div className="flex items-start gap-4">
-                  <div className="bg-green-50 p-3 rounded-lg text-green-600">
-                    <Calendar className="h-6 w-6" />
-                  </div>
-                  <div>
-                    <h4 className="font-bold text-gray-900">{c.title || 'Live Session'}</h4>
-                    <p className="text-sm text-gray-500 font-medium">{format(parseISO(c.scheduled_at), "MMM d, yyyy • h:mm a")}</p>
+            {upcomingClasses.map((c, i) => {
+              const teacher = teachers.find(t => t.user_id === c.teacher_id);
+              return (
+                <div key={i} className="bg-white rounded-xl p-5 shadow-sm border border-gray-100 flex items-center justify-between hover:border-green-200 transition-colors">
+                  <div className="flex items-center gap-4">
+                    <Avatar photoUrl={teacher?.profile_photo} name={teacher?.name} size="md" />
+                    <div>
+                      <h4 className="font-bold text-gray-900">{c.title || 'Live Session'}</h4>
+                      <p className="text-xs font-bold text-green-700">{teacher?.name || 'Teacher'}</p>
+                      <p className="text-sm text-gray-500 font-medium">{format(parseISO(c.scheduled_at), "MMM d, yyyy • h:mm a")}</p>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         ) : (
           <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100 text-center">
@@ -256,7 +300,7 @@ function HomeTab({ todayClass, upcomingClasses }: { todayClass: any, upcomingCla
   )
 }
 
-function AttendanceTab({ data }: { data: any }) {
+function AttendanceTab({ data, teachers }: { data: any, teachers: any[] }) {
   let barColor = "bg-red-500"
   if (data.percentage > 50 && data.percentage <= 75) barColor = "bg-yellow-500"
   if (data.percentage > 75) barColor = "bg-green-500"
@@ -265,18 +309,22 @@ function AttendanceTab({ data }: { data: any }) {
     <div className="space-y-6 animate-in fade-in duration-300">
       <h3 className="text-2xl font-bold text-green-900 mb-6">Attendance Overview</h3>
       
-      <div className="grid grid-cols-3 gap-3 md:gap-6">
+      <div className="grid grid-cols-4 gap-3 md:gap-6">
         <div className="bg-white rounded-2xl p-4 md:p-6 shadow-sm border border-green-100 text-center flex flex-col items-center justify-center">
-          <p className="text-gray-500 text-xs md:text-sm font-semibold uppercase tracking-wider mb-2">Scheduled</p>
-          <p className="text-3xl md:text-4xl font-extrabold text-gray-900">{data.totalScheduled}</p>
+          <p className="text-gray-500 text-[10px] md:text-sm font-semibold uppercase tracking-wider mb-2">Total</p>
+          <p className="text-2xl md:text-4xl font-extrabold text-gray-900">{data.totalClasses}</p>
         </div>
         <div className="bg-white rounded-2xl p-4 md:p-6 shadow-sm border border-green-100 text-center flex flex-col items-center justify-center">
-          <p className="text-gray-500 text-xs md:text-sm font-semibold uppercase tracking-wider mb-2">Attended</p>
-          <p className="text-3xl md:text-4xl font-extrabold text-green-600">{data.totalAttended}</p>
+          <p className="text-gray-500 text-[10px] md:text-sm font-semibold uppercase tracking-wider mb-2">Present</p>
+          <p className="text-2xl md:text-4xl font-extrabold text-green-600">{data.presentCount}</p>
         </div>
         <div className="bg-white rounded-2xl p-4 md:p-6 shadow-sm border border-green-100 text-center flex flex-col items-center justify-center">
-          <p className="text-gray-500 text-xs md:text-sm font-semibold uppercase tracking-wider mb-2">Percentage</p>
-          <p className="text-3xl md:text-4xl font-extrabold text-gray-900">{data.percentage}%</p>
+          <p className="text-gray-500 text-[10px] md:text-sm font-semibold uppercase tracking-wider mb-2">Absent</p>
+          <p className="text-2xl md:text-4xl font-extrabold text-red-600">{data.absentCount}</p>
+        </div>
+        <div className="bg-white rounded-2xl p-4 md:p-6 shadow-sm border border-green-100 text-center flex flex-col items-center justify-center">
+          <p className="text-gray-500 text-[10px] md:text-sm font-semibold uppercase tracking-wider mb-2">Percent</p>
+          <p className="text-2xl md:text-4xl font-extrabold text-gray-900">{data.percentage}%</p>
         </div>
       </div>
 
@@ -296,21 +344,28 @@ function AttendanceTab({ data }: { data: any }) {
         <div className="bg-white rounded-2xl overflow-hidden shadow-sm border border-gray-100">
           {data.history.length > 0 ? (
             <div className="divide-y divide-gray-100">
-              {data.history.map((h: any, i: number) => (
-                <div key={i} className="p-4 md:p-5 flex justify-between items-center hover:bg-gray-50 transition-colors">
-                  <div>
-                    <p className="font-bold text-gray-900">{h.className}</p>
-                    <p className="text-sm text-gray-500 font-medium">{format(parseISO(h.date), "MMMM d, yyyy")}</p>
+              {data.history.map((h: any, i: number) => {
+                const teacher = teachers.find(t => t.user_id === h.teacher_id);
+                return (
+                  <div key={i} className="p-4 md:p-5 flex justify-between items-center hover:bg-gray-50 transition-colors">
+                    <div className="flex items-center gap-4">
+                      <Avatar photoUrl={teacher?.profile_photo} name={teacher?.name} size="md" />
+                      <div>
+                        <p className="font-bold text-gray-900">{h.className}</p>
+                        <p className="text-xs font-bold text-green-700">{teacher?.name || 'Teacher'}</p>
+                        <p className="text-sm text-gray-500 font-medium">{format(parseISO(h.date), "MMMM d, yyyy")}</p>
+                      </div>
+                    </div>
+                    <div>
+                      {h.status === 'Present' ? (
+                        <span className="px-4 py-1.5 bg-green-50 text-green-700 rounded-full text-sm font-bold border border-green-200">Present</span>
+                      ) : (
+                        <span className="px-4 py-1.5 bg-red-50 text-red-700 rounded-full text-sm font-bold border border-red-200">Absent</span>
+                      )}
+                    </div>
                   </div>
-                  <div>
-                    {h.status === 'Attended' ? (
-                      <span className="px-4 py-1.5 bg-green-50 text-green-700 rounded-full text-sm font-bold border border-green-200">Attended</span>
-                    ) : (
-                      <span className="px-4 py-1.5 bg-red-50 text-red-700 rounded-full text-sm font-bold border border-red-200">Missed</span>
-                    )}
-                  </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           ) : (
             <div className="p-10 text-center flex flex-col items-center">
@@ -324,44 +379,4 @@ function AttendanceTab({ data }: { data: any }) {
   )
 }
 
-function ProfileTab({ profile }: { profile: any }) {
-  return (
-    <div className="space-y-6 animate-in fade-in duration-300">
-      <div className="bg-white rounded-3xl p-8 shadow-sm border border-green-100 text-center flex flex-col items-center relative overflow-hidden">
-        <div className="absolute top-0 left-0 right-0 h-32 bg-green-700"></div>
-        <div className="w-28 h-28 bg-white p-1 rounded-full flex items-center justify-center text-green-700 text-4xl font-bold mb-4 z-10 shadow-md">
-          <div className="w-full h-full bg-green-100 rounded-full flex items-center justify-center overflow-hidden">
-            {profile.photo_url ? (
-              <img src={profile.photo_url} alt="Profile" className="w-full h-full object-cover" />
-            ) : (
-              profile.name.charAt(0).toUpperCase()
-            )}
-          </div>
-        </div>
-        <h2 className="text-3xl font-extrabold text-gray-900 tracking-tight">{profile.name}</h2>
-        <p className="text-gray-500 mb-4 font-medium">{profile.email}</p>
-        <span className="px-5 py-1.5 bg-green-100 text-green-800 rounded-full text-sm font-bold tracking-wide border border-green-200 shadow-sm">
-          Student
-        </span>
-      </div>
 
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-        <div className="p-6 md:p-8">
-          <h3 className="font-bold text-gray-900 mb-6 text-xl">Account Details</h3>
-          <div className="space-y-6">
-            <div className="flex flex-col md:flex-row md:justify-between md:items-center py-3 border-b border-gray-50">
-              <p className="text-sm text-gray-500 font-medium mb-1 md:mb-0">Class Name</p>
-              <p className="font-bold text-gray-900 text-lg">{profile.class_name}</p>
-            </div>
-            <div className="flex flex-col md:flex-row md:justify-between md:items-center py-3 border-b border-gray-50">
-              <p className="text-sm text-gray-500 font-medium mb-1 md:mb-0">Date Joined</p>
-              <p className="font-bold text-gray-900">
-                {profile.date_joined ? format(new Date(profile.date_joined), "MMMM d, yyyy") : 'Unknown'}
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}

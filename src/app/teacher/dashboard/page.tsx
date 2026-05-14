@@ -1,19 +1,24 @@
 "use client"
 
 import { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { LogoutButton } from '@/components/logout-button'
-import { Calendar, Plus, BarChart3, Loader2, Video, CheckCircle, Clock, User, Globe, AlertCircle } from 'lucide-react'
+import { Calendar, Plus, BarChart3, Loader2, Video, CheckCircle, Clock, User, Globe, AlertCircle, ChevronDown } from 'lucide-react'
 import { format, parseISO, addWeeks, isAfter, startOfToday } from 'date-fns'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { toast } from 'sonner'
+import { Avatar } from '@/components/avatar'
 
-type Tab = 'classes' | 'create' | 'stats'
+import TeacherProfilePage from '@/app/teacher/profile/page'
+
+type Tab = 'classes' | 'create' | 'stats' | 'profile'
 
 export default function TeacherDashboard() {
+  const router = useRouter()
   const [activeTab, setActiveTab] = useState<Tab>('classes')
   const [isLoading, setIsLoading] = useState(true)
   const [teacherId, setTeacherId] = useState<string | null>(null)
@@ -23,28 +28,32 @@ export default function TeacherDashboard() {
   const [students, setStudents] = useState<any[]>([])
   const [selectedStudentId, setSelectedStudentId] = useState<string>('')
   const [classes, setClasses] = useState<any[]>([])
-  const [stats, setStats] = useState<any>({ total: 0, completed: 0, percentage: 0, studentBreakdown: [] })
+  const [stats, setStats] = useState<any>({ completed: 0, presentCount: 0, absentCount: 0, studentBreakdown: [] })
 
   useEffect(() => {
     const fetchStudents = async () => {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) {
         setIsLoading(false)
+        router.push('/login')
         return
       }
       setTeacherId(user.id)
 
-      const { data, error } = await supabase
-        .from('student_profiles')
-        .select('user_id, name, teacher_id')
-        .eq('teacher_id', user.id)
+      const response = await fetch('/api/teacher/students')
+      const result = await response.json()
       
-      console.log('Teacher ID:', user.id)
-      console.log('Students found:', data)
-      console.log('Error:', error)
+      if (!response.ok) {
+        console.error('Teacher students API error:', result?.error)
+        setStudents([])
+        setIsLoading(false)
+        return
+      }
+      
+      const data = result.students
+      console.log('Students found via API:', data)
       
       if (data && data.length > 0) {
-        // Map user_id to id for compatibility with existing UI code
         const mappedStudents = data.map((s: any) => ({
           ...s,
           id: s.user_id
@@ -85,20 +94,25 @@ export default function TeacherDashboard() {
 
   async function fetchStats() {
     if (!teacherId) return
-    const { data: allTeacherClasses } = await supabase
-      .from('classes')
-      .select('*')
-      .eq('teacher_id', teacherId)
     
-    if (!allTeacherClasses) return
+    const response = await fetch('/api/teacher/stats')
+    const result = await response.json()
+    
+    if (!response.ok) {
+      console.error('Teacher stats API error:', result?.error)
+      return
+    }
 
-    const total = allTeacherClasses.length
-    const completed = allTeacherClasses.filter(c => c.status === 'completed').length
-    const percentage = total === 0 ? 0 : Math.round((completed / total) * 100)
+    const allTeacherClasses = result.classes || []
+    const allAttendance = result.attendance || []
+
+    const completed = allTeacherClasses.filter((c: any) => c.status === 'completed').length
+    const presentCount = allAttendance?.filter((a: any) => a.status === 'present' || !a.status).length || 0
+    const absentCount = allAttendance?.filter((a: any) => a.status === 'absent').length || 0
 
     // Breakdown
     const breakdownMap = new Map()
-    allTeacherClasses.forEach(c => {
+    allTeacherClasses.forEach((c: any) => {
       if (!breakdownMap.has(c.student_id)) {
         breakdownMap.set(c.student_id, { total: 0, completed: 0 })
       }
@@ -110,27 +124,44 @@ export default function TeacherDashboard() {
     const breakdown = Array.from(breakdownMap.entries()).map(([sid, data]) => {
       const student = students.find(st => st.id === sid)
       return {
+        id: sid,
         name: student?.name || 'Unknown Student',
+        profile_photo: student?.profile_photo,
         total: data.total,
         completed: data.completed,
         percentage: data.total === 0 ? 0 : Math.round((data.completed / data.total) * 100)
       }
     })
 
-    setStats({ total, completed, percentage, studentBreakdown: breakdown })
+    setStats({ completed, presentCount, absentCount, studentBreakdown: breakdown })
   }
 
-  async function markAsCompleted(classObj: any) {
+  async function markClassStatus(classObj: any, status: 'present' | 'absent') {
     try {
-      const response = await fetch('/api/classes/complete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ classId: classObj.id, studentId: classObj.student_id }),
-      })
-      const result = await response.json()
-      if (!response.ok) throw new Error(result.error || 'Failed to mark class completed')
+      const { error: classError } = await supabase
+        .from('classes')
+        .update({ status: 'completed' })
+        .eq('id', classObj.id)
 
-      toast.success("Class marked as completed!")
+      if (classError) throw classError
+
+      const { error: attError } = await supabase
+        .from('attendance')
+        .insert({
+          class_id: classObj.id,
+          student_id: classObj.student_id,
+          teacher_id: teacherId,
+          status: status,
+          marked_at: new Date().toISOString()
+        })
+
+      if (attError && attError.code !== '23505') throw attError
+
+      if (status === 'present') {
+        toast.success("Class marked as completed")
+      } else {
+        toast.success("Student marked as absent")
+      }
       fetchClasses(selectedStudentId)
     } catch (error: any) {
       toast.error(error.message)
@@ -160,6 +191,7 @@ export default function TeacherDashboard() {
           <button onClick={() => setActiveTab('classes')} className={`py-4 px-2 border-b-2 font-medium transition-colors flex items-center gap-2 ${activeTab === 'classes' ? 'border-green-600 text-green-700' : 'border-transparent text-gray-500'}`}><Calendar className="h-5 w-5" />Classes</button>
           <button onClick={() => setActiveTab('create')} className={`py-4 px-2 border-b-2 font-medium transition-colors flex items-center gap-2 ${activeTab === 'create' ? 'border-green-600 text-green-700' : 'border-transparent text-gray-500'}`}><Plus className="h-5 w-5" />Create</button>
           <button onClick={() => setActiveTab('stats')} className={`py-4 px-2 border-b-2 font-medium transition-colors flex items-center gap-2 ${activeTab === 'stats' ? 'border-green-600 text-green-700' : 'border-transparent text-gray-500'}`}><BarChart3 className="h-5 w-5" />Stats</button>
+          <button onClick={() => setActiveTab('profile')} className={`py-4 px-2 border-b-2 font-medium transition-colors flex items-center gap-2 ${activeTab === 'profile' ? 'border-green-600 text-green-700' : 'border-transparent text-gray-500'}`}><User className="h-5 w-5" />Profile</button>
         </nav>
       </div>
 
@@ -173,7 +205,7 @@ export default function TeacherDashboard() {
                 value={selectedStudentId}
                 onChange={(e) => setSelectedStudentId(e.target.value)}
               >
-                {students.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                {students.map(s => <option key={s.id} value={s.id}>{s.name} • {s.registration_number || 'N/A'}</option>)}
               </select>
             </div>
 
@@ -182,26 +214,42 @@ export default function TeacherDashboard() {
                 classes.map(c => (
                   <Card key={c.id} className="border-green-100 overflow-hidden shadow-sm">
                     <CardContent className="p-5 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                      <div className="space-y-2">
-                        <div className="flex items-center gap-2 text-sm font-medium text-gray-500">
-                          <Clock className="h-4 w-4" />
-                          {format(parseISO(c.scheduled_at), "EEEE, d MMMM yyyy 'at' h:mm a")}
-                        </div>
-                        {c.meet_link && (
-                          <a href={c.meet_link} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-blue-600 hover:underline text-sm font-medium">
-                            <Video className="h-4 w-4" />
-                            Google Meet Link
-                          </a>
-                        )}
+                      <div className="flex items-center gap-4">
+                        {(() => {
+                          const student = students.find(s => s.id === c.student_id);
+                          return (
+                            <>
+                              <Avatar photoUrl={student?.profile_photo} name={student?.name} size="md" />
+                              <div className="space-y-1">
+                                <h4 className="font-bold text-gray-900">{student?.name || 'Unknown Student'}</h4>
+                                <div className="flex items-center gap-2 text-sm font-medium text-gray-500">
+                                  <Clock className="h-4 w-4" />
+                                  {format(parseISO(c.scheduled_at), "EEEE, d MMMM yyyy 'at' h:mm a")}
+                                </div>
+                                {c.meet_link && (
+                                  <a href={c.meet_link} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-blue-600 hover:underline text-sm font-medium">
+                                    <Video className="h-4 w-4" />
+                                    Google Meet Link
+                                  </a>
+                                )}
+                              </div>
+                            </>
+                          )
+                        })()}
                       </div>
                       <div className="flex items-center gap-3 w-full md:w-auto justify-between md:justify-end">
                         <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider ${c.status === 'scheduled' ? 'bg-blue-50 text-blue-700 border border-blue-100' : 'bg-green-50 text-green-700 border border-green-100'}`}>
                           {c.status}
                         </span>
                         {c.status === 'scheduled' && (
-                          <Button onClick={() => markAsCompleted(c)} size="sm" className="bg-green-600 hover:bg-green-700 text-white font-bold">
-                            Mark Completed
-                          </Button>
+                          <div className="flex gap-2">
+                            <Button onClick={() => markClassStatus(c, 'present')} size="sm" className="bg-green-600 hover:bg-green-700 text-white font-bold">
+                              Mark as Completed
+                            </Button>
+                            <Button onClick={() => markClassStatus(c, 'absent')} size="sm" className="bg-red-600 hover:bg-red-700 text-white font-bold">
+                              Mark as Absent
+                            </Button>
+                          </div>
                         )}
                       </div>
                     </CardContent>
@@ -232,9 +280,9 @@ export default function TeacherDashboard() {
         {activeTab === 'stats' && (
           <div className="space-y-8 animate-in fade-in duration-300">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <StatCard title="Total Created" value={stats.total} />
-              <StatCard title="Total Completed" value={stats.completed} />
-              <StatCard title="Completion Rate" value={`${stats.percentage}%`} />
+              <StatCard title="Total Classes Taken" value={stats.completed} />
+              <StatCard title="Total Present" value={stats.presentCount} />
+              <StatCard title="Total Absent" value={stats.absentCount} />
             </div>
 
             <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
@@ -244,9 +292,12 @@ export default function TeacherDashboard() {
                   stats.studentBreakdown.map((s: any, i: number) => (
                     <div key={i} className="space-y-2">
                       <div className="flex justify-between items-end">
-                        <div>
-                          <p className="font-bold text-gray-900">{s.name}</p>
-                          <p className="text-xs text-gray-500 font-medium">{s.completed} / {s.total} Classes</p>
+                        <div className="flex items-center gap-3">
+                          <Avatar photoUrl={s.profile_photo} name={s.name} size="md" />
+                          <div>
+                            <p className="font-bold text-gray-900">{s.name}</p>
+                            <p className="text-xs text-gray-500 font-medium">{s.completed} / {s.total} Classes</p>
+                          </div>
                         </div>
                         <span className="font-bold text-green-700">{s.percentage}%</span>
                       </div>
@@ -262,6 +313,8 @@ export default function TeacherDashboard() {
             </div>
           </div>
         )}
+
+        {activeTab === 'profile' && <TeacherProfilePage />}
       </main>
 
       {/* Mobile Bottom Navigation */}
@@ -269,6 +322,7 @@ export default function TeacherDashboard() {
         <NavBtn active={activeTab === 'classes'} onClick={() => setActiveTab('classes')} icon={<Calendar />} label="Classes" />
         <NavBtn active={activeTab === 'create'} onClick={() => setActiveTab('create')} icon={<Plus />} label="Create" />
         <NavBtn active={activeTab === 'stats'} onClick={() => setActiveTab('stats')} icon={<BarChart3 />} label="Stats" />
+        <NavBtn active={activeTab === 'profile'} onClick={() => setActiveTab('profile')} icon={<User />} label="Profile" />
       </nav>
     </div>
   )
@@ -295,6 +349,7 @@ function NavBtn({ active, onClick, icon, label }: { active: boolean, onClick: ()
 function CreateClassForm({ students, teacherId, onCreated }: { students: any[], teacherId: string | null, onCreated: (studentId: string) => void }) {
   const [formData, setFormData] = useState({ studentId: '', meetLink: '', date: '', time: '', repeatWeekly: false })
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isDropdownOpen, setIsDropdownOpen] = useState(false)
   const supabase = createClient()
 
   useEffect(() => {
@@ -348,14 +403,41 @@ function CreateClassForm({ students, teacherId, onCreated }: { students: any[], 
       <form onSubmit={handleSubmit} className="space-y-6">
         <div className="space-y-2">
           <Label className="text-green-900 font-semibold">Select Student</Label>
-          <select 
-            className="w-full p-3 border border-gray-200 rounded-xl bg-gray-50 focus:ring-2 focus:ring-green-500 outline-none"
-            value={formData.studentId}
-            onChange={(e) => setFormData(prev => ({ ...prev, studentId: e.target.value }))}
-            required
-          >
-            {students.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
+          <div className="relative">
+            <div 
+              className="w-full p-3 border border-gray-200 rounded-xl bg-gray-50 focus:ring-2 focus:ring-green-500 outline-none cursor-pointer flex items-center justify-between"
+              onClick={() => setIsDropdownOpen(!isDropdownOpen)}
+            >
+              {(() => {
+                const s = students.find(st => st.id === formData.studentId);
+                return (
+                  <div className="flex items-center gap-3">
+                    <Avatar photoUrl={s?.profile_photo} name={s?.name} size="sm" />
+                    <span className="font-bold text-green-900">{s?.name || 'Select a student'} {s?.registration_number ? ` • ${s.registration_number}` : ''}</span>
+                  </div>
+                )
+              })()}
+              <ChevronDown className={`h-5 w-5 text-gray-400 transition-transform ${isDropdownOpen ? 'rotate-180' : ''}`} />
+            </div>
+            
+            {isDropdownOpen && (
+              <div className="absolute z-[60] w-full mt-2 bg-white border border-gray-200 rounded-xl shadow-2xl max-h-60 overflow-y-auto animate-in fade-in zoom-in-95 duration-150">
+                {students.map(s => (
+                  <div 
+                    key={s.id} 
+                    className={`p-3 hover:bg-green-50 cursor-pointer flex items-center gap-3 transition-colors ${formData.studentId === s.id ? 'bg-green-50' : ''}`}
+                    onClick={() => {
+                      setFormData(prev => ({ ...prev, studentId: s.id }))
+                      setIsDropdownOpen(false)
+                    }}
+                  >
+                    <Avatar photoUrl={s.profile_photo} name={s.name} size="sm" />
+                    <span className="font-medium text-gray-900">{s.name} • {s.registration_number || 'N/A'}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="space-y-2">

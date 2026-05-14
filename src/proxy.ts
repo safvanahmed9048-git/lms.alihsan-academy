@@ -39,7 +39,20 @@ export default async function proxy(request: NextRequest) {
 
   // Redirect authenticated users away from the login page based on role
   if (user && isLoginPage) {
-    const { data: profile } = await supabase
+    // Create admin client to bypass RLS loop on profiles
+    const supabaseAdmin = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      {
+        cookies: {
+          get(name: string) { return undefined },
+          set(name: string, value: string, options: any) {},
+          remove(name: string, options: any) {}
+        }
+      }
+    )
+
+    const { data: profile } = await supabaseAdmin
       .from('profiles')
       .select('role')
       .eq('id', user.id)
@@ -63,6 +76,44 @@ export default async function proxy(request: NextRequest) {
     const redirectUrl = request.nextUrl.clone()
     redirectUrl.pathname = '/login'
     return NextResponse.redirect(redirectUrl)
+  }
+
+  // Role-based route protection
+  if (user && isProtectedRoute) {
+    // Create admin client to bypass RLS loop on profiles
+    const supabaseAdmin = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.SUPABASE_SERVICE_ROLE_KEY!,
+      {
+        cookies: {
+          get(name: string) { return undefined },
+          set(name: string, value: string, options: any) {},
+          remove(name: string, options: any) {}
+        }
+      }
+    )
+
+    const { data: profile } = await supabaseAdmin
+      .from('profiles')
+      .select('role')
+      .eq('id', user.id)
+      .single()
+
+    const role = profile?.role
+    const pathname = request.nextUrl.pathname
+
+    if (pathname.startsWith('/student') && role !== 'student') {
+      return NextResponse.redirect(new URL('/login', request.url))
+    }
+    if (pathname.startsWith('/teacher') && role !== 'teacher') {
+      return NextResponse.redirect(new URL('/login', request.url))
+    }
+    if (pathname.startsWith('/admin') && role !== 'admin' && role !== 'superadmin') {
+      return NextResponse.redirect(new URL('/login', request.url))
+    }
+    if (pathname.startsWith('/superadmin') && role !== 'superadmin') {
+      return NextResponse.redirect(new URL('/login', request.url))
+    }
   }
 
   return supabaseResponse
