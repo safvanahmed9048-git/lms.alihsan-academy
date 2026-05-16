@@ -33,7 +33,6 @@ export default function SuperAdminDashboard() {
   const [searchQuery, setSearchQuery] = useState('')
   const [removeAccessSearchQuery, setRemoveAccessSearchQuery] = useState('')
   const [removeAccessRoleFilter, setRemoveAccessRoleFilter] = useState('all')
-  const [userToRemove, setUserToRemove] = useState<any>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [newUser, setNewUser] = useState({ email: '', password: '', role: 'student', name: '', className: '', teacherId: '', registrationNumber: '' })
   const [editingStudentId, setEditingStudentId] = useState<string | null>(null)
@@ -141,19 +140,44 @@ export default function SuperAdminDashboard() {
     }
   }
 
-  async function handleRemoveUser(userId: string) {
+  const [removingUserId, setRemovingUserId] = useState<string | null>(null)
+  const [showConfirm, setShowConfirm] = useState<string | null>(null)
+
+  const handleRemoveUser = (userId: string, userName: string) => {
+    setShowConfirm(userId)
+  }
+
+  const confirmRemove = async (userId: string) => {
+    setRemovingUserId(userId)
+    setShowConfirm(null)
+    
     try {
-      const response = await fetch(`/api/admin/users?id=${userId}`, {
+      const response = await fetch('/api/admin/users', {
         method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId })
       })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to remove user')
+      }
+
+      // Remove from local state immediately
+      setAllUsers(prev => prev.filter(u => u.id !== userId))
+      setStudents(prev => prev.filter(s => s.id !== userId))
+      setTeachers(prev => prev.filter(t => t.id !== userId))
       
-      const result = await response.json()
-      if (!response.ok) throw new Error(result.error || "Failed to delete user")
-        
-      toast.success("User removed successfully!")
-      fetchData() // Refresh list
+      toast.success('User access removed successfully')
+      
+      // Also refresh background data to be sure
+      fetchData()
+
     } catch (error: any) {
-      toast.error(error.message)
+      toast.error('Failed to remove: ' + error.message)
+    } finally {
+      setRemovingUserId(null)
     }
   }
 
@@ -858,7 +882,7 @@ export default function SuperAdminDashboard() {
                             <tr key={u.id} className="hover:bg-red-50/50 transition-colors">
                               <td className="p-4">
                                 <p className="font-bold text-gray-900">{u.name}</p>
-                                {u.name !== u.email && <p className="text-sm text-gray-500">{u.email}</p>}
+                                <p className="text-sm text-gray-500">{u.email}</p>
                               </td>
                               <td className="p-4">
                                 <span className="bg-gray-100 text-gray-800 px-2.5 py-0.5 rounded text-xs font-bold uppercase">
@@ -866,16 +890,35 @@ export default function SuperAdminDashboard() {
                                 </span>
                               </td>
                               <td className="p-4 text-right">
-                                <motion.button 
-                                  whileHover={{ 
-                                    x: [0, -3, 3, -3, 0],
-                                    transition: { duration: 0.3 }
-                                  }}
-                                  onClick={() => setUserToRemove(u)}
-                                  className="bg-red-600 hover:bg-red-700 text-white font-bold text-xs inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg shadow-sm"
-                                >
-                                  <Trash className="h-3.5 w-3.5" /> Remove
-                                </motion.button>
+                                {showConfirm === u.id ? (
+                                  <div className="flex items-center justify-end gap-2">
+                                    <span className="text-sm text-red-600 font-bold">Sure?</span>
+                                    <button
+                                      onClick={() => confirmRemove(u.id)}
+                                      className="bg-red-600 text-white px-3 py-1 rounded text-xs font-bold shadow-sm hover:bg-red-700 transition-colors"
+                                    >
+                                      Yes, Remove
+                                    </button>
+                                    <button
+                                      onClick={() => setShowConfirm(null)}
+                                      className="bg-gray-200 text-gray-700 px-3 py-1 rounded text-xs font-bold hover:bg-gray-300 transition-colors"
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
+                                ) : removingUserId === u.id ? (
+                                  <div className="flex items-center justify-end gap-2 text-gray-500">
+                                    <div className="animate-spin h-4 w-4 border-2 border-red-500 border-t-transparent rounded-full" />
+                                    <span className="text-xs font-bold">Removing...</span>
+                                  </div>
+                                ) : (
+                                  <button
+                                    onClick={() => handleRemoveUser(u.id, u.name)}
+                                    className="flex items-center gap-1.5 bg-red-500 text-white px-3 py-1.5 rounded-lg text-xs font-bold hover:bg-red-600 transition-all shadow-sm hover:shadow-md"
+                                  >
+                                    <Trash className="h-3.5 w-3.5" /> Remove
+                                  </button>
+                                )}
                               </td>
                             </tr>
                           )) : (
@@ -1024,43 +1067,6 @@ export default function SuperAdminDashboard() {
                   </>
                 )}
               </div>
-            </div>
-          </motion.div>
-        </div>
-      )}
-      </AnimatePresence>
-
-      {/* Remove User Confirmation Modal */}
-      <AnimatePresence>
-        {userToRemove && (
-          <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.9 }}
-              className="bg-white rounded-xl shadow-xl w-full max-w-md p-6"
-            >
-            <div className="flex items-center gap-3 text-red-600 mb-4">
-              <AlertCircle className="h-6 w-6" />
-              <h3 className="text-lg font-bold">Confirm Removal</h3>
-            </div>
-            <p className="text-gray-600 mb-6">
-              Are you sure you want to remove access for <strong className="text-gray-900">{userToRemove.name}</strong>? This cannot be undone.
-            </p>
-            <div className="flex justify-end gap-3">
-              <Button variant="outline" onClick={() => setUserToRemove(null)}>
-                Cancel
-              </Button>
-              <Button 
-                variant="destructive" 
-                className="bg-red-600 hover:bg-red-700 text-white font-bold"
-                onClick={() => {
-                  handleRemoveUser(userToRemove.id)
-                  setUserToRemove(null)
-                }}
-              >
-                Yes, Remove
-              </Button>
             </div>
           </motion.div>
         </div>

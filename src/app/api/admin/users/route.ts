@@ -157,27 +157,76 @@ export async function DELETE(request: Request) {
       return errorResponse
     }
 
-    const url = new URL(request.url)
-    const userId = url.searchParams.get('id')
-
+    const { userId } = await request.json()
+    
     if (!userId) {
-      return NextResponse.json({ error: 'User ID is required' }, { status: 400 })
+      return NextResponse.json(
+        { error: 'User ID is required' }, 
+        { status: 400 }
+      )
     }
 
-    // 1. Delete from profiles table first (to satisfy any FK constraints if they exist)
-    await supabaseAdmin.from('profiles').delete().eq('id', userId)
-    await supabaseAdmin.from('student_profiles').delete().eq('user_id', userId)
-    await supabaseAdmin.from('teacher_profiles').delete().eq('user_id', userId)
+    // Delete from student_profiles first
+    await supabaseAdmin
+      .from('student_profiles')
+      .delete()
+      .eq('user_id', userId)
 
-    // 2. Delete from Supabase Auth
-    const { error } = await supabaseAdmin.auth.admin.deleteUser(userId)
-    if (error) throw error
+    // Delete from teacher_profiles
+    await supabaseAdmin
+      .from('teacher_profiles')
+      .delete()
+      .eq('user_id', userId)
+
+    // Delete from classes (as student)
+    await supabaseAdmin
+      .from('classes')
+      .delete()
+      .eq('student_id', userId)
+
+    // Delete from classes (as teacher)
+    await supabaseAdmin
+      .from('classes')
+      .delete()
+      .eq('teacher_id', userId)
+
+    // Delete from attendance
+    await supabaseAdmin
+      .from('attendance')
+      .delete()
+      .eq('student_id', userId)
+
+    await supabaseAdmin
+      .from('attendance')
+      .delete()
+      .eq('teacher_id', userId)
+
+    // Delete from profiles
+    await supabaseAdmin
+      .from('profiles')
+      .delete()
+      .eq('id', userId)
+
+    // Finally delete from Supabase Auth
+    const { error: authError } = await supabaseAdmin
+      .auth.admin.deleteUser(userId)
+
+    if (authError) {
+      console.error('Auth delete error:', authError)
+      return NextResponse.json(
+        { error: authError.message }, 
+        { status: 500 }
+      )
+    }
 
     return NextResponse.json({ success: true })
 
   } catch (error: any) {
-    console.error("Admin user deletion error:", error)
-    return NextResponse.json({ error: error.message }, { status: 400 })
+    console.error('Delete error:', error)
+    return NextResponse.json(
+      { error: error.message }, 
+      { status: 500 }
+    )
   }
 }
 
