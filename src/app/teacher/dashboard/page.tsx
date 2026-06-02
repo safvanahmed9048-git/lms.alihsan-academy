@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { LogoutButton } from '@/components/logout-button'
 import { AcademyHeader } from '@/components/academy-header'
-import { Calendar, Plus, BarChart3, Loader2, Video, CheckCircle, Clock, User, Globe, AlertCircle, ChevronDown } from 'lucide-react'
+import { Calendar, Plus, BarChart3, Loader2, Video, CheckCircle, Clock, User, Globe, AlertCircle, ChevronDown, Users } from 'lucide-react'
 import { format, parseISO, addWeeks, isAfter, startOfToday } from 'date-fns'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -258,13 +258,24 @@ export default function TeacherDashboard() {
                 className="w-full p-2 border border-gray-200 rounded-lg bg-gray-50 font-bold text-green-900"
                 value={selectedStudentId}
                 onChange={(e) => setSelectedStudentId(e.target.value)}
+                disabled={students.length === 0}
               >
-                {students.map(s => <option key={s.id} value={s.id}>{s.name} • {s.registration_number || 'N/A'}</option>)}
+                {students.length > 0 ? (
+                  students.map(s => <option key={s.id} value={s.id}>{s.name} • {s.registration_number || 'N/A'}</option>)
+                ) : (
+                  <option value="">No assigned students found</option>
+                )}
               </select>
             </div>
 
             <div className="space-y-4">
-              {classes.length > 0 ? (
+              {students.length === 0 ? (
+                <div className="text-center p-12 bg-white rounded-2xl border border-dashed border-gray-200">
+                  <Users className="h-10 w-10 text-gray-300 mx-auto mb-2" />
+                  <p className="text-gray-500 font-medium">No assigned students found.</p>
+                  <p className="text-xs text-gray-400 mt-1">Please contact Superadmin to assign students to you.</p>
+                </div>
+              ) : classes.length > 0 ? (
                 classes.map((c, index) => (
                   <motion.div
                     key={c.id}
@@ -499,7 +510,10 @@ function CreateClassForm({ students, teacherId, onCreated }: { students: any[], 
                 return (
                   <div className="flex items-center gap-3">
                     <Avatar photoUrl={s?.profile_photo} name={s?.name} size="sm" />
-                    <span className="font-bold text-green-900">{s?.name || 'Select a student'} {s?.registration_number ? ` • ${s.registration_number}` : ''}</span>
+                    <span className="font-bold text-green-900">
+                      {students.length === 0 ? 'No assigned students found' : (s?.name || 'Select a student')}
+                      {s?.registration_number ? ` • ${s.registration_number}` : ''}
+                    </span>
                   </div>
                 )
               })()}
@@ -508,19 +522,25 @@ function CreateClassForm({ students, teacherId, onCreated }: { students: any[], 
             
             {isDropdownOpen && (
               <div className="absolute z-[60] w-full mt-2 bg-white border border-gray-200 rounded-xl shadow-2xl max-h-60 overflow-y-auto animate-in fade-in zoom-in-95 duration-150">
-                {students.map(s => (
-                  <div 
-                    key={s.id} 
-                    className={`p-3 hover:bg-green-50 cursor-pointer flex items-center gap-3 transition-colors ${formData.studentId === s.id ? 'bg-green-50' : ''}`}
-                    onClick={() => {
-                      setFormData(prev => ({ ...prev, studentId: s.id }))
-                      setIsDropdownOpen(false)
-                    }}
-                  >
-                    <Avatar photoUrl={s.profile_photo} name={s.name} size="sm" />
-                    <span className="font-medium text-gray-900">{s.name} • {s.registration_number || 'N/A'}</span>
+                {students.length > 0 ? (
+                  students.map(s => (
+                    <div 
+                      key={s.id} 
+                      className={`p-3 hover:bg-green-50 cursor-pointer flex items-center gap-3 transition-colors ${formData.studentId === s.id ? 'bg-green-50' : ''}`}
+                      onClick={() => {
+                        setFormData(prev => ({ ...prev, studentId: s.id }))
+                        setIsDropdownOpen(false)
+                      }}
+                    >
+                      <Avatar photoUrl={s.profile_photo} name={s.name} size="sm" />
+                      <span className="font-medium text-gray-900">{s.name} • {s.registration_number || 'N/A'}</span>
+                    </div>
+                  ))
+                ) : (
+                  <div className="p-4 text-center text-gray-500 font-medium">
+                    No assigned students found
                   </div>
-                ))}
+                )}
               </div>
             )}
           </div>
